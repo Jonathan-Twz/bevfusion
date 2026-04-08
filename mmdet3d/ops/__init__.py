@@ -9,7 +9,10 @@ from mmcv.ops import (
 )
 
 from .ball_query import ball_query
-from .feature_decorator import feature_decorator
+try:
+    from .feature_decorator import feature_decorator
+except ImportError:
+    feature_decorator = None
 from .furthest_point_sample import (
     Points_Sampler,
     furthest_point_sample,

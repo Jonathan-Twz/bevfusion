@@ -133,6 +133,9 @@ models/*
 data/*
 runs/*
 
+# Pretrained checkpoints (large; GitHub limit 100MB — download per README)
+pretrained/*.pth
+
 # torch hipify generated files
 *_hip.*
 *.hip

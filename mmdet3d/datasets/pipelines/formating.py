@@ -53,7 +53,13 @@ class DefaultFormatBundle3D:
             results["points"] = DC(results["points"].tensor)
 
         if "radar" in results:
-            results["radar"] = DC(results["radar"].tensor)
+            # Check if radar is a valid Points object (not empty dict or None)
+            radar = results["radar"]
+            if radar is not None and hasattr(radar, 'tensor'):
+                results["radar"] = DC(results["radar"].tensor)
+            else:
+                # Remove invalid radar data
+                del results["radar"]
 
         for key in ["voxels", "coors", "voxel_centers", "num_points"]:
             if key not in results:

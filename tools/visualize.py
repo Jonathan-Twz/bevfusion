@@ -10,7 +10,7 @@ from mmcv.parallel import MMDistributedDataParallel
 from mmcv.runner import load_checkpoint
 from torchpack import distributed as dist
 from torchpack.utils.config import configs
-from torchpack.utils.tqdm import tqdm
+from tqdm import tqdm
 
 from mmdet3d.core import LiDARInstance3DBoxes
 from mmdet3d.core.utils import visualize_camera, visualize_lidar, visualize_map
@@ -47,6 +47,7 @@ def main() -> None:
     parser.add_argument("--bbox-score", type=float, default=None)
     parser.add_argument("--map-score", type=float, default=0.5)
     parser.add_argument("--out-dir", type=str, default="viz")
+    parser.add_argument("--max-samples", type=int, default=None, help="Max number of samples to visualize")
     args, opts = parser.parse_known_args()
 
     configs.load(args.config, recursive=True)
@@ -79,7 +80,12 @@ def main() -> None:
         )
         model.eval()
 
+    sample_count = 0
     for data in tqdm(dataflow):
+        if args.max_samples is not None and sample_count >= args.max_samples:
+            break
+        sample_count += 1
+        
         metas = data["metas"].data[0][0]
         name = "{}-{}".format(metas["timestamp"], metas["token"])
 

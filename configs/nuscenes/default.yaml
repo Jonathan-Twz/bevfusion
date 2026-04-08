@@ -25,14 +25,10 @@ augment3d:
 object_classes:
   - car
   - truck
-  - construction_vehicle
   - bus
-  - trailer
-  - barrier
   - motorcycle
   - bicycle
   - pedestrian
-  - traffic_cone
 
 map_classes:
   - drivable_area
@@ -90,10 +86,6 @@ train_pipeline:
           car: 5
           truck: 5
           bus: 5
-          trailer: 5
-          construction_vehicle: 5
-          traffic_cone: 5
-          barrier: 5
           motorcycle: 5
           bicycle: 5
           pedestrian: 5
@@ -101,14 +93,10 @@ train_pipeline:
       sample_groups:
         car: 2
         truck: 3
-        construction_vehicle: 7
         bus: 4
-        trailer: 6
-        barrier: 2
         motorcycle: 6
         bicycle: 6
         pedestrian: 2
-        traffic_cone: 2
       points_loader:
         type: LoadPointsFromFile
         coord_type: LIDAR
@@ -264,7 +252,7 @@ test_pipeline:
     keyframe_only: true 
 
 data:
-  samples_per_gpu: 4
+  samples_per_gpu: 8
   workers_per_gpu: 4
   train:
     type: CBGSDataset

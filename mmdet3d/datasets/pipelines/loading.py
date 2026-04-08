@@ -291,7 +291,11 @@ class LoadBEVSegmentation:
             layer_names.extend(mappings[name])
         layer_names = list(set(layer_names))
 
-        location = data["location"]
+        # Handle missing location field (e.g., nuCarla dataset)
+        location = data.get("location", None)
+        if location is None or location not in self.maps:
+            # Use first available map as default
+            location = list(self.maps.keys())[0]
         masks = self.maps[location].get_map_mask(
             patch_box=patch_box,
             patch_angle=patch_angle,

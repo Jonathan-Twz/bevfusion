@@ -193,6 +193,31 @@ torchpack dist-run -np 8 python tools/train.py configs/nuscenes/seg/fusion-bev25
 
 Note: please run `tools/test.py` separately after training to get the final evaluation metrics.
 
+### NAVSIM / OpenScene batch BEV features (camera-only)
+
+Use [tools/generate_bev_features_batch.py](tools/generate_bev_features_batch.py) inside the `bevfusion:nucarla` Docker image (see [launch_docker.sh](launch_docker.sh)). Manifest build only needs Python + tqdm (no OpenCV/GPU). Full / trial runs need CUDA.
+
+```bash
+# 1) Build manifest (filters frames with all 6 camera images on disk)
+python tools/generate_bev_features_batch.py --build-manifest \
+  --dataset-root /dataset/navsim --manifest-out /path/to/manifest.json \
+  --splits trainval test
+
+# 2) Small trial: saves .pt under output-root and camera/BEV PNGs under trial-viz-dir
+# Mount HDD in docker: -v /media/hdd/wenzhe:/media/hdd/wenzhe (see launch_docker.sh)
+python tools/generate_bev_features_batch.py --trial 8 \
+  --dataset-root /dataset/navsim --manifest /path/to/manifest.json \
+  --trial-viz-dir /tmp/bev_trial
+
+# 3) Multi-GPU full run (resume: skips existing *decoder_neck.pt)
+# Default --output-root is /media/hdd/wenzhe/bev_features (override with --output-root if needed)
+python tools/generate_bev_features_batch.py \
+  --dataset-root /dataset/navsim --manifest /path/to/manifest.json \
+  --num-gpus 4 --batch-size 8 --num-workers 8
+```
+
+Single-frame debugging: [tools/generate_bev_features.py](tools/generate_bev_features.py). Visualize `.pt`: [tools/visualize_bev_feat.py](tools/visualize_bev_feat.py).
+
 ## Deployment on TensorRT
 [CUDA-BEVFusion](https://github.com/NVIDIA-AI-IOT/Lidar_AI_Solution/tree/master/CUDA-BEVFusion): Best practice for TensorRT, which provides INT8 acceleration solutions and achieves 25fps on ORIN.
 

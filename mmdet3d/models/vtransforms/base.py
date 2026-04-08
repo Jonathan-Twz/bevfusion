@@ -219,7 +219,7 @@ class BaseTransform(nn.Module):
             'bda_mat': lidar_aug_matrix,
             'sensor2ego_mats': camera2ego, 
         }
-        x = self.get_cam_feats(img, mats_dict)
+        x = self.get_cam_feats(img)
 
         use_depth = False
         if type(x) == tuple:

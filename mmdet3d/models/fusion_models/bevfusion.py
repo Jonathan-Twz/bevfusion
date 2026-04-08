@@ -142,7 +142,7 @@ class BEVFusion(Base3DFusionModel):
             camera2lidar,
             img_aug_matrix,
             lidar_aug_matrix,
-            img_metas,
+            metas=img_metas,
             depth_loss=self.use_depth_loss, 
             gt_depths=gt_depths,
         )
