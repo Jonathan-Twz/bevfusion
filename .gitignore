@@ -143,3 +143,5 @@ pretrained/*.pth
 nuscenes
 bev_gallery
 wandb
+
+logs/navsim_bev_gt_cache/stage3_masks.npy
