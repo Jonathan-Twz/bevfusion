@@ -157,9 +157,20 @@ class NavsimDataAdapter:
         self,
         camera_names: Sequence[str] = NAVSIM_CAMERAS_NUSCENES_ORDER,
         target_hw: Optional[Tuple[int, int]] = None,
+        lidar_align_to_nuscenes: bool = False,
     ):
         self.camera_names = tuple(camera_names)
         self.target_hw = target_hw  # (H, W); if None, set from BEVSegmentationInference later
+        # When True, set ``lidar_aug_matrix`` to a reflection that swaps the
+        # lidar X/Y axes (det = -1). This is required for zero-shot inference
+        # with the nuScenes-pretrained checkpoint on NAVSIM: nuScenes GT is
+        # displayed after ``masks.transpose(0, 2, 1)`` (TOP = vehicle LEFT)
+        # while NAVSIM GT is not transposed (TOP = vehicle RIGHT), so the two
+        # display conventions are mirrored along the ego L/R axis. A pure
+        # rotation (det=+1) cannot reconcile them; the swap-XY reflection can.
+        # Keep ``False`` for models that were fine-tuned on NAVSIM (stage1/2/3):
+        # they already learned the mapping from identity lidar_aug to NAVSIM GT.
+        self.lidar_align_to_nuscenes = bool(lidar_align_to_nuscenes)
 
     @staticmethod
     def load_scene_pkl(pkl_path: str) -> List[Dict[str, Any]]:
@@ -255,7 +266,16 @@ class NavsimDataAdapter:
         n = len(self.camera_names)
         eye4 = np.eye(4, dtype=np.float32)
         img_aug = np.stack([eye4.copy() for _ in range(n)], axis=0)[None, ...]
-        lidar_aug = np.eye(4, dtype=np.float32)[None, :, :]
+        lidar_aug_mat = np.eye(4, dtype=np.float32)
+        if self.lidar_align_to_nuscenes:
+            # Swap-XY reflection (see class docstring / ``__init__`` comment).
+            lidar_aug_mat[:3, :3] = np.array(
+                [[0.0, 1.0, 0.0],
+                 [1.0, 0.0, 0.0],
+                 [0.0, 0.0, 1.0]],
+                dtype=np.float32,
+            )
+        lidar_aug = lidar_aug_mat[None, :, :]
 
         return {
             "camera_intrinsics": np.stack(cam_intr, axis=0)[None, ...],

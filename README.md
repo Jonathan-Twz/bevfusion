@@ -195,6 +195,8 @@ Note: please run `tools/test.py` separately after training to get the final eval
 
 ### NAVSIM / OpenScene batch BEV features (camera-only)
 
+**Full reference:** [navisim_bev_feature_generation.md](navisim_bev_feature_generation.md)
+
 Use [tools/generate_bev_features_batch.py](tools/generate_bev_features_batch.py) inside the `bevfusion:nucarla` Docker image (see [launch_docker.sh](launch_docker.sh)). Manifest build only needs Python + tqdm (no OpenCV/GPU). Full / trial runs need CUDA.
 
 ```bash
@@ -217,6 +219,43 @@ python tools/generate_bev_features_batch.py \
 ```
 
 Single-frame debugging: [tools/generate_bev_features.py](tools/generate_bev_features.py). Visualize `.pt`: [tools/visualize_bev_feat.py](tools/visualize_bev_feat.py).
+
+NAVSIM **cameras + BEV channel stats** (same script as nuScenes): [tools/batch_visualize_bev_pt_with_cameras.py](tools/batch_visualize_bev_pt_with_cameras.py). Use `--viz-tag navsim` so PNGs are named `navsim__{split}__{scene}__{token}.png` (parallel to `nuscenes__flat__{token}.png`), e.g. output dir `bev_gallery/navsim_viz/`.
+
+**NAVSIM BEV map segmentation fine-tune** (nuPlan map GT, camera-only): see [docs/navsim_bev_seg_finetune.md](docs/navsim_bev_seg_finetune.md). Configs under `configs/navsim/seg/`; validation metrics dump: [tools/navsim_seg_eval_metrics.py](tools/navsim_seg_eval_metrics.py). Compare BEV `.pt` before/after fine-tune with [tools/generate_bev_features_batch.py](tools/generate_bev_features_batch.py) + [tools/batch_visualize_bev_pt_with_cameras.py](tools/batch_visualize_bev_pt_with_cameras.py).
+
+### nuScenes batch BEV features (camera-only)
+
+1. Point `data/nuscenes` at your nuScenes root (folder with `samples/`, `v1.0-mini/` or `v1.0-trainval/`, etc.).
+2. Generate info pickles (needs `nuscenes-devkit`, `mmcv`; the converter no longer imports `mmdet3d` for this step):
+
+```bash
+python -c "from tools.data_converter.nuscenes_converter import create_nuscenes_infos; \
+  create_nuscenes_infos('data/nuscenes/', 'nuscenes', version='v1.0-mini')"
+```
+
+3. Export BEV `.pt` (flat `{token}_vtransform.pt` / `{token}_decoder_neck.pt`) — use Docker `bevfusion:nucarla` if your host lacks CUDA mmcv:
+
+```bash
+# Full v1.0-mini (train + val, 404 keyframes): pass both info pkls
+python tools/generate_bev_features_nuscenes.py \
+  --info-pkl data/nuscenes/nuscenes_infos_train.pkl data/nuscenes/nuscenes_infos_val.pkl \
+  --dataset-root data/nuscenes \
+  --output-root bev_gallery/nuscenes_mini \
+  --num-gpus 1 --batch-size 4 --num-workers 4
+```
+
+4. Combined cameras + BEV channel stats: [tools/batch_visualize_bev_pt_with_cameras.py](tools/batch_visualize_bev_pt_with_cameras.py) with `--nuscenes-info` (one or more pkls) and a flat `--pt-root`.
+
+```bash
+python tools/batch_visualize_bev_pt_with_cameras.py \
+  --pt-root bev_gallery/nuscenes_mini \
+  --dataset-root data/nuscenes \
+  --nuscenes-info data/nuscenes/nuscenes_infos_train.pkl data/nuscenes/nuscenes_infos_val.pkl \
+  --out-dir bev_gallery/nuscenes_mini_viz
+```
+
+Adapter: [tools/nuscenes_bev_adapter.py](tools/nuscenes_bev_adapter.py).
 
 ## Deployment on TensorRT
 [CUDA-BEVFusion](https://github.com/NVIDIA-AI-IOT/Lidar_AI_Solution/tree/master/CUDA-BEVFusion): Best practice for TensorRT, which provides INT8 acceleration solutions and achieves 25fps on ORIN.

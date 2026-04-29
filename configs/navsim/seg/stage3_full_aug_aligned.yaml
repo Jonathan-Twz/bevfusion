@@ -1,0 +1,311 @@
+# Stage 3 (aligned): 在 stage3_full_aug 基础上开启 lidar_align_to_nuscenes。
+# 与 stage3_full_aug.yaml 的差异：
+#   (1) train/val/test 三个 dataset 段都加 ``lidar_align_to_nuscenes: true``
+#       (核心改动，见下面长注释)。
+#   (2) log_config 里的 TensorboardLoggerHook 换成 WandbLoggerHook。
+#   (3) data.samples_per_gpu 维持 10，但默认用 4 GPU (全局 bs=40 vs 老 30)。
+# 配套启动脚本：tools/train_navsim_stage3_aligned.sh
+#
+# 背景：
+#   * 原 stage3 用 ``lidar_aug = I`` + NavsimMapRasterizer 训练。NavsimMapRasterizer
+#     输出的 GT 布局是 row=y_nav（TOP=车右）、col=x_nav（LEFT=车后），但 LSSTransform
+#     在 identity lidar_aug 下把 NAVSIM 点云按 row=x_nav、col=y_nav pool，导致 pred
+#     与 GT 天然差一次 90° 旋转 / 一次左右镜像，模型不得不在 decoder 里自学一套内部
+#     旋转，才能和 GT 对齐。这会浪费 nuScenes pretrained 里已经学好的先验。
+#   * 把 ``lidar_aug_matrix`` 换成 swap-XY 反射（det=-1），会让 LSS pool 出的 BEV
+#     feature grid 直接落到 row=y_nav、col=x_nav，与 GT 像素对齐，且与 pretrained
+#     decoder 在 nuScenes 上学到的空间布局更接近，应该收敛更快、指标更好。
+#   * 详见 ``mmdet3d/datasets/navsim_bev_seg_dataset.py`` 的 __init__ docstring
+#     与 ``tools/navsim_bev_adapter.py`` 里对应字段的推导注释。
+#
+# 其他一切超参（lr、max_epochs、ImageAug3D、GT cache、manifest）与 stage3_full_aug
+# 完全一致，方便直接和原 stage3 checkpoint 做 A/B 对比。
+seed: 0
+deterministic: false
+cudnn_benchmark: false
+
+checkpoint_config:
+  interval: 1
+  max_keep_ckpts: 3
+
+log_config:
+  interval: 50
+  hooks:
+    - type: TextLoggerHook
+    - type: WandbLoggerHook
+      # Requires ``wandb`` installed and ``WANDB_API_KEY`` set in the env
+      # (``tools/train_navsim_stage3_aligned.sh`` passes it through), or falls
+      # back to ``WANDB_MODE=offline`` which writes local ``wandb/`` runs that
+      # can be synced later with ``wandb sync``.
+      # NOTE: the mmcv in this image (1.4.x) only supports the base signature:
+      # ``init_kwargs / interval / ignore_last / reset_flag / commit /
+      # by_epoch / with_step``. ``log_checkpoint`` and friends belong to the
+      # newer ``MMDetWandbHook`` variant (mmcv ≥1.5).
+      init_kwargs:
+        # ``project`` / ``name`` are deliberately NOT hard-coded here so the
+        # launch script's ``WANDB_PROJECT`` / ``WANDB_NAME`` env vars (which
+        # auto-timestamp the run name) take effect and we don't collide on
+        # one identical run every relaunch.
+        tags:
+          - stage3
+          - aligned
+          - lidar_aug_swap_xy
+          - 4gpu
+      interval: 50
+      commit: true
+
+load_from: pretrained/camera-only-seg.pth
+# TEMP: resume from epoch_2 after the viz/OOM interruption on 2026-04-22.
+# Set back to ``null`` once the run has completed or for a fresh launch.
+# resume_from: runs/navsim_seg_stage3_aligned/latest.pth
+resume_from: null
+
+fp16:
+  loss_scale:
+    growth_interval: 2000
+
+max_epochs: 30
+runner:
+  type: CustomEpochBasedRunner
+  max_epochs: ${max_epochs}
+
+dataset_type: NavsimBEVSegDataset
+dataset_root: /home/wenzhe/wm_ws/WoTE/dataset
+maps_root: /home/wenzhe/wm_ws/WoTE/dataset/maps
+map_version: nuplan-maps-v1.0
+image_size: [256, 704]
+point_cloud_range: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+
+map_classes:
+  - drivable_area
+  - ped_crossing
+  - walkway
+  - stop_line
+  - carpark_area
+  - divider
+object_classes: []
+
+input_modality:
+  use_lidar: false
+  use_camera: true
+  use_radar: false
+  use_map: false
+  use_external: false
+
+train_pipeline:
+  - type: LoadMultiViewImageFromFiles
+    to_float32: true
+  - type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: [0.38, 0.55]
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: [-5.4, 5.4]
+    rand_flip: false
+    is_train: true
+  - type: LoadEmptyPoints
+    coord_type: LIDAR
+    load_dim: 5
+    use_dim: [0, 1, 2, 3, 4]
+  - type: LoadBEVSegmentationNavsimCached
+    masks_npy: logs/navsim_bev_gt_cache/stage3_masks.npy
+    index_json: logs/navsim_bev_gt_cache/stage3_index.json
+  - type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  - type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  - type: Collect3D
+    keys: [img, points, gt_masks_bev]
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
+  - type: GTDepth
+    keyframe_only: true
+
+test_pipeline:
+  - type: LoadMultiViewImageFromFiles
+    to_float32: true
+  - type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: [0.48, 0.48]
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: [0.0, 0.0]
+    rand_flip: false
+    is_train: false
+  - type: LoadEmptyPoints
+    coord_type: LIDAR
+    load_dim: 5
+    use_dim: [0, 1, 2, 3, 4]
+  - type: LoadBEVSegmentationNavsimCached
+    masks_npy: logs/navsim_bev_gt_cache/stage3_masks.npy
+    index_json: logs/navsim_bev_gt_cache/stage3_index.json
+  - type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  - type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  - type: Collect3D
+    keys: [img, points, gt_masks_bev]
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
+  - type: GTDepth
+    keyframe_only: true
+
+data:
+  # samples_per_gpu: 10 # full gpu memory
+  samples_per_gpu: 6             # 4 GPU × 10 = 全局 bs=40（老 stage3 是 3×10=30；
+                                  # lr 故意沿用 1.0e-4 保持与老 stage3 其余超参一致，
+                                  # 方便 A/B 对比，真要追 loss 可另行 lr scaling）
+  workers_per_gpu: 6
+  train:
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: logs/navsim_finetune_stage3_train.json
+    pipeline: ${train_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    image_size: ${image_size}
+    test_mode: false
+    filter_empty_gt: false
+    box_type_3d: LiDAR
+    lidar_align_to_nuscenes: true          # ← 与 stage3_full_aug 的唯一差异
+  val:
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: logs/navsim_finetune_stage3_val.json
+    pipeline: ${test_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    image_size: ${image_size}
+    test_mode: true
+    filter_empty_gt: false
+    box_type_3d: LiDAR
+    lidar_align_to_nuscenes: true          # ← 评估时也必须一致，否则和训练分布不匹配
+  test:
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: logs/navsim_finetune_stage3_val.json
+    pipeline: ${test_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    image_size: ${image_size}
+    test_mode: true
+    filter_empty_gt: false
+    box_type_3d: LiDAR
+    lidar_align_to_nuscenes: true
+
+evaluation:
+  interval: 2
+  pipeline: ${test_pipeline}
+
+model:
+  type: BEVFusion
+  encoders:
+    lidar: null
+    camera:
+      backbone:
+        type: SwinTransformer
+        embed_dims: 96
+        depths: [2, 2, 6, 2]
+        num_heads: [3, 6, 12, 24]
+        window_size: 7
+        mlp_ratio: 4
+        qkv_bias: true
+        qk_scale: null
+        drop_rate: 0.0
+        attn_drop_rate: 0.0
+        drop_path_rate: 0.3
+        patch_norm: true
+        out_indices: [1, 2, 3]
+        with_cp: false
+        convert_weights: true
+        init_cfg:
+          type: Pretrained
+          checkpoint: https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth
+      neck:
+        type: GeneralizedLSSFPN
+        in_channels: [192, 384, 768]
+        out_channels: 256
+        start_level: 0
+        num_outs: 3
+        norm_cfg: {type: BN2d, requires_grad: true}
+        act_cfg: {type: ReLU, inplace: true}
+        upsample_cfg: {mode: bilinear, align_corners: false}
+      vtransform:
+        type: LSSTransform
+        in_channels: 256
+        out_channels: 80
+        image_size: ${image_size}
+        feature_size: ${[image_size[0] // 8, image_size[1] // 8]}
+        xbound: [-51.2, 51.2, 0.4]
+        ybound: [-51.2, 51.2, 0.4]
+        zbound: [-10.0, 10.0, 20.0]
+        dbound: [1.0, 60.0, 0.5]
+        downsample: 2
+  fuser: null
+  decoder:
+    backbone:
+      type: GeneralizedResNet
+      in_channels: 80
+      blocks:
+        - [2, 160, 2]
+        - [2, 320, 2]
+        - [2, 640, 1]
+    neck:
+      type: LSSFPN
+      in_indices: [-1, 0]
+      in_channels: [640, 160]
+      out_channels: 256
+      scale_factor: 2
+  heads:
+    object: null
+    map:
+      type: BEVSegmentationHead
+      in_channels: 256
+      grid_transform:
+        input_scope: [[-51.2, 51.2, 0.8], [-51.2, 51.2, 0.8]]
+        output_scope: [[-50, 50, 0.5], [-50, 50, 0.5]]
+      classes: ${map_classes}
+      loss: focal
+
+optimizer:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.01
+  paramwise_cfg:
+    custom_keys:
+      absolute_pos_embed: {decay_mult: 0}
+      relative_position_bias_table: {decay_mult: 0}
+      encoders.camera.backbone: {lr_mult: 0.0}
+      encoders.camera.neck: {lr_mult: 0.0}
+      encoders.camera.vtransform: {lr_mult: 0.3}
+      decoder.backbone: {lr_mult: 1.0}
+      decoder.neck: {lr_mult: 1.0}
+      heads.map: {lr_mult: 1.0}
+
+optimizer_config:
+  grad_clip: {max_norm: 35, norm_type: 2}
+
+lr_config:
+  policy: step
+  warmup: linear
+  warmup_iters: 1500
+  warmup_ratio: 0.001
+  step: [14, 18]
+  gamma: 0.1

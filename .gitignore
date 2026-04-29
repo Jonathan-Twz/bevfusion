@@ -139,3 +139,7 @@ pretrained/*.pth
 # torch hipify generated files
 *_hip.*
 *.hip
+
+nuscenes
+bev_gallery
+wandb

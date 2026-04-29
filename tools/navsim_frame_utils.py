@@ -19,6 +19,16 @@ NAVSIM_CAMERAS_NUSCENES_ORDER: Tuple[str, ...] = (
     "CAM_R2",  # CAM_BACK_RIGHT
 )
 
+# Stitched 2x3: front row L–F–R; back row swaps lower corners: R2–B0–L2
+NAVSIM_CAMERAS_VISUAL_ORDER: Tuple[str, ...] = (
+    "CAM_L0",
+    "CAM_F0",
+    "CAM_R0",
+    "CAM_R2",
+    "CAM_B0",
+    "CAM_L2",
+)
+
 
 def check_frame_images_exist(
     frame: Dict[str, Any],
@@ -43,5 +53,6 @@ def check_frame_images_exist(
 
 __all__ = [
     "NAVSIM_CAMERAS_NUSCENES_ORDER",
+    "NAVSIM_CAMERAS_VISUAL_ORDER",
     "check_frame_images_exist",
 ]

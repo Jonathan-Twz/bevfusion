@@ -1,0 +1,263 @@
+seed: 0
+deterministic: false
+cudnn_benchmark: false
+
+checkpoint_config:
+  interval: 1
+  max_keep_ckpts: 3
+
+log_config:
+  interval: 50
+  hooks:
+    - type: TextLoggerHook
+    - type: TensorboardLoggerHook
+
+load_from: pretrained/camera-only-seg.pth
+resume_from: null
+
+fp16:
+  loss_scale:
+    growth_interval: 2000
+
+max_epochs: 3
+runner:
+  type: CustomEpochBasedRunner
+  max_epochs: ${max_epochs}
+
+dataset_type: NavsimBEVSegDataset
+dataset_root: /home/wenzhe/wm_ws/WoTE/dataset
+maps_root: /home/wenzhe/wm_ws/WoTE/dataset/maps
+map_version: nuplan-maps-v1.0
+image_size: [256, 704]
+point_cloud_range: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+
+map_classes:
+  - drivable_area
+  - ped_crossing
+  - walkway
+  - stop_line
+  - carpark_area
+  - divider
+object_classes: []
+
+input_modality:
+  use_lidar: false
+  use_camera: true
+  use_radar: false
+  use_map: false
+  use_external: false
+
+train_pipeline:
+  - type: LoadMultiViewImageFromFiles
+    to_float32: true
+  - type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: [0.48, 0.48]
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: [0.0, 0.0]
+    rand_flip: false
+    is_train: false
+  - type: LoadEmptyPoints
+    coord_type: LIDAR
+    load_dim: 5
+    use_dim: [0, 1, 2, 3, 4]
+  - type: LoadBEVSegmentationNavsim
+    maps_root: ${maps_root}
+    map_version: ${map_version}
+    xbound: [-50.0, 50.0, 0.5]
+    ybound: [-50.0, 50.0, 0.5]
+    classes: ${map_classes}
+  - type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  - type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  - type: Collect3D
+    keys: [img, points, gt_masks_bev]
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
+  - type: GTDepth
+    keyframe_only: true
+
+test_pipeline:
+  - type: LoadMultiViewImageFromFiles
+    to_float32: true
+  - type: ImageAug3D
+    final_dim: ${image_size}
+    resize_lim: [0.48, 0.48]
+    bot_pct_lim: [0.0, 0.0]
+    rot_lim: [0.0, 0.0]
+    rand_flip: false
+    is_train: false
+  - type: LoadEmptyPoints
+    coord_type: LIDAR
+    load_dim: 5
+    use_dim: [0, 1, 2, 3, 4]
+  - type: LoadBEVSegmentationNavsim
+    maps_root: ${maps_root}
+    map_version: ${map_version}
+    xbound: [-50.0, 50.0, 0.5]
+    ybound: [-50.0, 50.0, 0.5]
+    classes: ${map_classes}
+  - type: ImageNormalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  - type: DefaultFormatBundle3D
+    classes: ${object_classes}
+  - type: Collect3D
+    keys: [img, points, gt_masks_bev]
+    meta_keys:
+      - camera_intrinsics
+      - camera2ego
+      - lidar2ego
+      - lidar2camera
+      - camera2lidar
+      - lidar2image
+      - img_aug_matrix
+      - lidar_aug_matrix
+  - type: GTDepth
+    keyframe_only: true
+
+data:
+  samples_per_gpu: 2
+  workers_per_gpu: 4
+  train:
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: logs/navsim_finetune_stage1_train.json
+    pipeline: ${train_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    image_size: ${image_size}
+    test_mode: false
+    filter_empty_gt: false
+    box_type_3d: LiDAR
+  val:
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: logs/navsim_finetune_stage1_val.json
+    pipeline: ${test_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    image_size: ${image_size}
+    test_mode: true
+    filter_empty_gt: false
+    box_type_3d: LiDAR
+  test:
+    type: ${dataset_type}
+    dataset_root: ${dataset_root}
+    ann_file: logs/navsim_finetune_stage1_val.json
+    pipeline: ${test_pipeline}
+    object_classes: ${object_classes}
+    map_classes: ${map_classes}
+    modality: ${input_modality}
+    image_size: ${image_size}
+    test_mode: true
+    filter_empty_gt: false
+    box_type_3d: LiDAR
+
+evaluation:
+  interval: 1
+  pipeline: ${test_pipeline}
+
+model:
+  type: BEVFusion
+  encoders:
+    lidar: null
+    camera:
+      backbone:
+        type: SwinTransformer
+        embed_dims: 96
+        depths: [2, 2, 6, 2]
+        num_heads: [3, 6, 12, 24]
+        window_size: 7
+        mlp_ratio: 4
+        qkv_bias: true
+        qk_scale: null
+        drop_rate: 0.0
+        attn_drop_rate: 0.0
+        drop_path_rate: 0.3
+        patch_norm: true
+        out_indices: [1, 2, 3]
+        with_cp: false
+        convert_weights: true
+        init_cfg:
+          type: Pretrained
+          checkpoint: https://github.com/SwinTransformer/storage/releases/download/v1.0.0/swin_tiny_patch4_window7_224.pth
+      neck:
+        type: GeneralizedLSSFPN
+        in_channels: [192, 384, 768]
+        out_channels: 256
+        start_level: 0
+        num_outs: 3
+        norm_cfg: {type: BN2d, requires_grad: true}
+        act_cfg: {type: ReLU, inplace: true}
+        upsample_cfg: {mode: bilinear, align_corners: false}
+      vtransform:
+        type: LSSTransform
+        in_channels: 256
+        out_channels: 80
+        image_size: ${image_size}
+        feature_size: ${[image_size[0] // 8, image_size[1] // 8]}
+        xbound: [-51.2, 51.2, 0.4]
+        ybound: [-51.2, 51.2, 0.4]
+        zbound: [-10.0, 10.0, 20.0]
+        dbound: [1.0, 60.0, 0.5]
+        downsample: 2
+  fuser: null
+  decoder:
+    backbone:
+      type: GeneralizedResNet
+      in_channels: 80
+      blocks:
+        - [2, 160, 2]
+        - [2, 320, 2]
+        - [2, 640, 1]
+    neck:
+      type: LSSFPN
+      in_indices: [-1, 0]
+      in_channels: [640, 160]
+      out_channels: 256
+      scale_factor: 2
+  heads:
+    object: null
+    map:
+      type: BEVSegmentationHead
+      in_channels: 256
+      grid_transform:
+        input_scope: [[-51.2, 51.2, 0.8], [-51.2, 51.2, 0.8]]
+        output_scope: [[-50, 50, 0.5], [-50, 50, 0.5]]
+      classes: ${map_classes}
+      loss: focal
+
+optimizer:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.01
+  paramwise_cfg:
+    custom_keys:
+      absolute_pos_embed: {decay_mult: 0}
+      relative_position_bias_table: {decay_mult: 0}
+      encoders.camera.backbone: {lr_mult: 0.0}
+      encoders.camera.neck: {lr_mult: 0.0}
+      encoders.camera.vtransform: {lr_mult: 0.0}
+      decoder.backbone: {lr_mult: 0.0}
+      decoder.neck: {lr_mult: 0.0}
+      heads.map: {lr_mult: 1.0}
+
+optimizer_config:
+  grad_clip: {max_norm: 35, norm_type: 2}
+
+lr_config:
+  policy: step
+  step: [2]
+  gamma: 0.1

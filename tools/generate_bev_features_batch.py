@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Batch NAVSIM -> BEVFusion BEV features (vtransform + decoder_neck as separate .pt files).
+Batch NAVSIM -> BEVFusion BEV features. By default writes only ``*_decoder_neck.pt``;
+use ``--save-vtransform`` to also write ``*_vtransform.pt`` (LSS / vtransform output).
 
 Phases:
   1) --build-manifest  Parallel scan pkls, emit manifest.json of frames with all 6 images.
   2) --trial N          Small run + camera grid + BEV heatmaps for sanity check.
   3) default            Multi-GPU inference with resume.
 
-Default export root: ``/media/hdd/wenzhe/bev_features/{split}/{scene}/{token}_*.pt``
+Default export root: ``/media/T5/bev_features/{split}/{scene}/{token}_*.pt``
 (override with ``--output-root``).
+
+**Resume** still keys off ``*_decoder_neck.pt`` only, so turning off vtransform
+exports does not affect skipping completed frames.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from multiprocessing import Pool
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_BEV_OUTPUT_ROOT = "/media/hdd/wenzhe/bev_features"
+DEFAULT_BEV_OUTPUT_ROOT = "/media/T5/bev_features"
 sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
@@ -35,8 +39,20 @@ from tqdm import tqdm
 
 from tools.navsim_frame_utils import (
     NAVSIM_CAMERAS_NUSCENES_ORDER,
+    NAVSIM_CAMERAS_VISUAL_ORDER,
     check_frame_images_exist,
 )
+
+
+def _auto_data_loader_workers_per_gpu(num_gpus: int) -> int:
+    """Spread CPU cores across GPU worker processes; cap to limit RAM from dataloader children."""
+    c = os.cpu_count() or 8
+    per = max(2, (c - 2) // max(1, num_gpus))
+    return min(16, per)
+
+
+def _auto_scan_pool_workers() -> int:
+    return min(64, max(4, (os.cpu_count() or 32)))
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +182,7 @@ class NavsimBEVDataset(Dataset):
         dataset_root: str,
         target_hw: Tuple[int, int],
         camera_names: Sequence[str] = NAVSIM_CAMERAS_NUSCENES_ORDER,
+        lidar_align_to_nuscenes: bool = False,
     ):
         from tools.navsim_bev_adapter import NavsimDataAdapter
 
@@ -174,7 +191,9 @@ class NavsimBEVDataset(Dataset):
         self.target_hw = tuple(target_hw)
         self.camera_names = tuple(camera_names)
         self.adapter = NavsimDataAdapter(
-            camera_names=camera_names, target_hw=self.target_hw
+            camera_names=camera_names,
+            target_hw=self.target_hw,
+            lidar_align_to_nuscenes=lidar_align_to_nuscenes,
         )
         self._pkl_cache: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -276,7 +295,7 @@ def save_camera_grid_bgr(
 
     tiles: List[np.ndarray] = []
     h0 = w0 = None
-    for name in NAVSIM_CAMERAS_NUSCENES_ORDER:
+    for name in NAVSIM_CAMERAS_VISUAL_ORDER:
         rel = frame["cams"][name]["data_path"]
         path = os.path.join(sensor_blobs_root, rel)
         pil = Image.open(path).convert("RGB")
@@ -374,7 +393,10 @@ def run_trial(args: argparse.Namespace) -> None:
     )
     runner = extractor.runner
     target_hw = tuple(runner.image_size)
-    adapter = NavsimDataAdapter(target_hw=target_hw)
+    adapter = NavsimDataAdapter(
+        target_hw=target_hw,
+        lidar_align_to_nuscenes=bool(args.lidar_align_to_nuscenes),
+    )
 
     out_root = os.path.abspath(args.output_root)
     for k, e in enumerate(tqdm(picks, desc="trial")):
@@ -407,7 +429,8 @@ def run_trial(args: argparse.Namespace) -> None:
             img_aug_matrix=to_t("img_aug_matrix"),
             lidar_aug_matrix=to_t("lidar_aug_matrix"),
         )
-        torch.save(feats["vtransform"].detach().cpu(), f"{prefix}_vtransform.pt")
+        if args.save_vtransform:
+            torch.save(feats["vtransform"].detach().cpu(), f"{prefix}_vtransform.pt")
         torch.save(feats["decoder_neck"].detach().cpu(), f"{prefix}_decoder_neck.pt")
 
         tag = f"trial_{k:03d}_{e['token']}"
@@ -418,7 +441,10 @@ def run_trial(args: argparse.Namespace) -> None:
         nk = _bev_to_heatmap_hw(feats["decoder_neck"])
         cmp_path = os.path.join(trial_dir, f"{tag}_compare.png")
         save_trial_comparison(grid_png, vt, nk, cmp_path)
-        print(f"Saved trial assets: {prefix}_*.pt, {grid_png}, {cmp_path}")
+        pt_info = f"{prefix}_decoder_neck.pt" + (
+            f", {prefix}_vtransform.pt" if args.save_vtransform else ""
+        )
+        print(f"Saved trial: {pt_info}, {grid_png}, {cmp_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +461,8 @@ class WorkerArgs:
     batch_size: int
     num_workers: int
     target_hw: Tuple[int, int]
+    lidar_align_to_nuscenes: bool = False
+    save_vtransform: bool = False
 
 
 def gpu_worker_entry(rank: int, chunks: List[List[Dict[str, Any]]], wa: WorkerArgs) -> None:
@@ -466,6 +494,7 @@ def gpu_worker_entry(rank: int, chunks: List[List[Dict[str, Any]]], wa: WorkerAr
         chunk,
         dataset_root=wa.dataset_root,
         target_hw=(th, tw),
+        lidar_align_to_nuscenes=wa.lidar_align_to_nuscenes,
     )
     loader_kwargs: Dict[str, Any] = {
         "batch_size": wa.batch_size,
@@ -477,7 +506,7 @@ def gpu_worker_entry(rank: int, chunks: List[List[Dict[str, Any]]], wa: WorkerAr
     }
     if wa.num_workers > 0:
         loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 2
+        loader_kwargs["prefetch_factor"] = 3
         loader_kwargs["multiprocessing_context"] = mp.get_context("spawn")
 
     loader = DataLoader(ds, **loader_kwargs)
@@ -507,8 +536,10 @@ def gpu_worker_entry(rank: int, chunks: List[List[Dict[str, Any]]], wa: WorkerAr
         )
 
         bsz = images.shape[0]
-        vt = feats["vtransform"].detach().cpu()
         nk = feats["decoder_neck"].detach().cpu()
+        vt = None
+        if wa.save_vtransform:
+            vt = feats["vtransform"].detach().cpu()
         for i in range(bsz):
             m = meta_list[i]
             scene_dir = os.path.join(wa.output_root, m["split"], m["scene"])
@@ -516,7 +547,8 @@ def gpu_worker_entry(rank: int, chunks: List[List[Dict[str, Any]]], wa: WorkerAr
             pfx = os.path.join(scene_dir, m["token"])
             # Slices share storage with the batch tensor; torch.save would serialize
             # the whole batch storage (~batch_size x larger). Clone to a compact file.
-            torch.save(vt[i].clone(), f"{pfx}_vtransform.pt")
+            if wa.save_vtransform and vt is not None:
+                torch.save(vt[i].clone(), f"{pfx}_vtransform.pt")
             torch.save(nk[i].clone(), f"{pfx}_decoder_neck.pt")
 
 
@@ -529,9 +561,18 @@ def run_multi_gpu(args: argparse.Namespace) -> None:
         print("All frames already processed (decoder_neck present). Nothing to do.")
         return
 
-    num_gpus = min(args.num_gpus, torch.cuda.device_count())
+    avail = torch.cuda.device_count()
+    req = args.num_gpus
+    if req < 0:
+        req = avail
+    num_gpus = min(req, avail)
     if num_gpus < 1:
         raise RuntimeError("No CUDA devices available")
+
+    num_workers = args.num_workers
+    if num_workers < 0:
+        num_workers = _auto_data_loader_workers_per_gpu(num_gpus)
+    args.num_workers = num_workers
 
     config_path = (
         args.config
@@ -559,7 +600,8 @@ def run_multi_gpu(args: argparse.Namespace) -> None:
     chunks = [manifest[i::num_gpus] for i in range(num_gpus)]
     print(
         f"Processing {len(manifest)} frames on {num_gpus} GPU(s), "
-        f"batch_size={args.batch_size}, chunks={[len(c) for c in chunks]}"
+        f"batch_size={args.batch_size}, num_workers/GPU={num_workers}, "
+        f"save_vtransform={args.save_vtransform}, chunks={[len(c) for c in chunks]}"
     )
 
     wa = WorkerArgs(
@@ -570,6 +612,8 @@ def run_multi_gpu(args: argparse.Namespace) -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         target_hw=target_hw,
+        lidar_align_to_nuscenes=bool(args.lidar_align_to_nuscenes),
+        save_vtransform=bool(args.save_vtransform),
     )
 
     mp.spawn(
@@ -617,14 +661,34 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--config", type=str, default="configs/nuscenes/seg/camera-bev256d2.yaml")
     p.add_argument("--checkpoint", type=str, default="pretrained/camera-only-seg.pth")
-    p.add_argument("--num-gpus", type=int, default=4)
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--num-workers", type=int, default=8)
+    p.add_argument(
+        "--save-vtransform",
+        action="store_true",
+        help="Also write *_vtransform.pt (default: only *_decoder_neck.pt).",
+    )
+    p.add_argument(
+        "--num-gpus",
+        type=int,
+        default=-1,
+        help="GPU processes to spawn; -1 = all visible devices (from CUDA_VISIBLE_DEVICES / torch).",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Per-GPU batch (raise if VRAM allows; lower if OOM).",
+    )
+    p.add_argument(
+        "--num-workers",
+        type=int,
+        default=-1,
+        help="DataLoader workers per GPU process; -1 = auto from CPU count (capped at 16).",
+    )
     p.add_argument(
         "--scan-workers",
         type=int,
-        default=32,
-        help="multiprocessing pool size for --build-manifest",
+        default=-1,
+        help="Multiprocessing pool for --build-manifest; -1 = auto from CPU count (capped at 64).",
     )
     p.add_argument("--trial", type=int, default=0, help="If >0, trial mode on N diverse frames")
     p.add_argument(
@@ -638,16 +702,29 @@ def parse_args() -> argparse.Namespace:
         default="cuda:0",
         help="CUDA device for trial mode",
     )
+    p.add_argument(
+        "--lidar-align-to-nuscenes",
+        action="store_true",
+        help=(
+            "Inject a swap-XY reflection into lidar_aug_matrix so that the "
+            "nuScenes-pretrained BEV features align with the NAVSIM GT display "
+            "convention. Only use this with pretrained/nuScenes-trained "
+            "checkpoints. Leave OFF for stage1/2/3 fine-tuned checkpoints."
+        ),
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     if args.build_manifest:
+        sw = args.scan_workers
+        if sw < 0:
+            sw = _auto_scan_pool_workers()
         m = build_manifest(
             os.path.abspath(args.dataset_root),
             args.splits,
-            pool_workers=args.scan_workers,
+            pool_workers=sw,
         )
         out_path = os.path.abspath(args.manifest_out)
         save_manifest(out_path, m)

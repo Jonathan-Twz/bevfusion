@@ -1,0 +1,41 @@
+{
+  "num_samples": 1000,
+  "classes": {
+    "drivable_area": {
+      "pixel_positive_ratio": 0.424779875,
+      "sample_non_empty_ratio": 1.0,
+      "pixel_positive_count": 16991195,
+      "pixel_total_count": 40000000
+    },
+    "ped_crossing": {
+      "pixel_positive_ratio": 0.008071925,
+      "sample_non_empty_ratio": 0.542,
+      "pixel_positive_count": 322877,
+      "pixel_total_count": 40000000
+    },
+    "walkway": {
+      "pixel_positive_ratio": 0.0279847,
+      "sample_non_empty_ratio": 0.726,
+      "pixel_positive_count": 1119388,
+      "pixel_total_count": 40000000
+    },
+    "stop_line": {
+      "pixel_positive_ratio": 0.012684375,
+      "sample_non_empty_ratio": 0.759,
+      "pixel_positive_count": 507375,
+      "pixel_total_count": 40000000
+    },
+    "carpark_area": {
+      "pixel_positive_ratio": 0.0,
+      "sample_non_empty_ratio": 0.0,
+      "pixel_positive_count": 0,
+      "pixel_total_count": 40000000
+    },
+    "divider": {
+      "pixel_positive_ratio": 0.1976867,
+      "sample_non_empty_ratio": 0.814,
+      "pixel_positive_count": 7907468,
+      "pixel_total_count": 40000000
+    }
+  }
+}

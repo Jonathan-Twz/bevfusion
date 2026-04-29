@@ -9,8 +9,52 @@ from pyquaternion import Quaternion
 from shapely.geometry import MultiPoint, box
 from typing import List, Tuple, Union
 
-from mmdet3d.core.bbox.box_np_ops import points_cam2img
-from mmdet3d.datasets import NuScenesDataset
+# Same mapping as mmdet3d.datasets.NuScenesDataset.NameMapping (avoid importing mmdet3d/mmdet/mmcv.ops)
+NUSCENES_NAME_MAPPING = {
+    "movable_object.barrier": "barrier",
+    "vehicle.bicycle": "bicycle",
+    "vehicle.bus.bendy": "bus",
+    "vehicle.bus.rigid": "bus",
+    "vehicle.car": "car",
+    "vehicle.construction": "construction_vehicle",
+    "vehicle.motorcycle": "motorcycle",
+    "human.pedestrian.adult": "pedestrian",
+    "human.pedestrian.child": "pedestrian",
+    "human.pedestrian.construction_worker": "pedestrian",
+    "human.pedestrian.police_officer": "pedestrian",
+    "movable_object.trafficcone": "traffic_cone",
+    "vehicle.trailer": "trailer",
+    "vehicle.truck": "truck",
+}
+
+
+def points_cam2img(points_3d, proj_mat, with_depth=False):
+    """Copy of mmdet3d.core.bbox.box_np_ops.points_cam2img (numpy-only, no mmcv CUDA)."""
+    points_shape = list(points_3d.shape)
+    points_shape[-1] = 1
+
+    assert len(proj_mat.shape) == 2, (
+        "The dimension of the projection" f" matrix should be 2 instead of {len(proj_mat.shape)}."
+    )
+    d1, d2 = proj_mat.shape[:2]
+    assert (d1 == 3 and d2 == 3) or (d1 == 3 and d2 == 4) or (d1 == 4 and d2 == 4), (
+        "The shape of the projection matrix" f" ({d1}*{d2}) is not supported."
+    )
+    if d1 == 3:
+        proj_mat_expanded = np.eye(4, dtype=proj_mat.dtype)
+        proj_mat_expanded[:d1, :d2] = proj_mat
+        proj_mat = proj_mat_expanded
+
+    points_4 = np.concatenate([points_3d, np.ones(points_shape)], axis=-1)
+    point_2d = points_4 @ proj_mat.T
+    point_2d_res = point_2d[..., :2] / point_2d[..., 2:3]
+
+    if with_depth:
+        points_2d_depth = np.concatenate([point_2d_res, point_2d[..., 2:3]], axis=-1)
+        return points_2d_depth
+
+    return point_2d_res
+
 
 nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
                   'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
@@ -280,8 +324,8 @@ def _fill_trainval_infos(nusc,
 
             names = [b.name for b in boxes]
             for i in range(len(names)):
-                if names[i] in NuScenesDataset.NameMapping:
-                    names[i] = NuScenesDataset.NameMapping[names[i]]
+                if names[i] in NUSCENES_NAME_MAPPING:
+                    names[i] = NUSCENES_NAME_MAPPING[names[i]]
             names = np.array(names)
             # we need to convert rot to SECOND format.
             gt_boxes = np.concatenate([locs, dims, -rots - np.pi / 2], axis=1)
@@ -653,9 +697,9 @@ def generate_record(ann_rec: dict, x1: float, y1: float, x2: float, y2: float,
     coco_rec['image_id'] = sample_data_token
     coco_rec['area'] = (y2 - y1) * (x2 - x1)
 
-    if repro_rec['category_name'] not in NuScenesDataset.NameMapping:
+    if repro_rec['category_name'] not in NUSCENES_NAME_MAPPING:
         return None
-    cat_name = NuScenesDataset.NameMapping[repro_rec['category_name']]
+    cat_name = NUSCENES_NAME_MAPPING[repro_rec['category_name']]
     coco_rec['category_name'] = cat_name
     coco_rec['category_id'] = nus_categories.index(cat_name)
     coco_rec['bbox'] = [x1, y1, x2 - x1, y2 - y1]

@@ -68,6 +68,11 @@ def main() -> None:
     )
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument(
+        "--save-vtransform",
+        action="store_true",
+        help="Also write {prefix}_vtransform.pt (default: only {prefix}_decoder_neck.pt).",
+    )
+    parser.add_argument(
         "--sensor-split",
         type=str,
         default="auto",
@@ -133,13 +138,13 @@ def main() -> None:
         frame, sensor_blobs_root=sensor_blobs_root
     )
 
-    p_vt = f"{prefix}_vtransform.pt"
     p_neck = f"{prefix}_decoder_neck.pt"
-    torch.save(feats["vtransform"].detach().cpu(), p_vt)
     torch.save(feats["decoder_neck"].detach().cpu(), p_neck)
-
-    print(f"Saved: {p_vt}  shape={tuple(feats['vtransform'].shape)}")
     print(f"Saved: {p_neck}  shape={tuple(feats['decoder_neck'].shape)}")
+    if args.save_vtransform:
+        p_vt = f"{prefix}_vtransform.pt"
+        torch.save(feats["vtransform"].detach().cpu(), p_vt)
+        print(f"Saved: {p_vt}  shape={tuple(feats['vtransform'].shape)}")
 
     for k in ("vtransform", "decoder_neck"):
         assert torch.isfinite(feats[k]).all(), k
